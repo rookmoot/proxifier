@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"log"
 	"time"
 	"errors"
 	"math/rand"
@@ -16,9 +15,6 @@ type Proxy struct {
 }
 
 var proxies []*Proxy
-
-//remote, err := proxy.SelectFromRequest(req)
-//return remote.GetConn()
 
 func AddProxy(addr string) error {
 	proxy, err := New(addr)
@@ -35,7 +31,6 @@ func SelectRandom() (*Proxy, error) {
 
 	r := rand.Intn(len(proxies))
 	
-	log.Printf("Random : %v with \n", r, proxies[r].addr.String())
 	return proxies[r], nil
 }
 
