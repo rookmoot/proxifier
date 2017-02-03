@@ -18,6 +18,7 @@ import (
         "net/http"
 
         "github.com/rookmoot/proxifier/logger"
+        "github.com/rookmoot/proxifier/proxy"
         "github.com/rookmoot/proxifier/forward"
 )
 var (
@@ -33,12 +34,9 @@ func handleRequest(conn net.Conn) {
                 return
         }
         defer fwd.Close()
-        err = fwd.To(func(req *http.Request) (*net.TCPConn, error) {
-                addr, err := net.ResolveTCPAddr("tcp", "A PROXY IP:PORT HERE")
-                if err != nil {
-                        panic(err)
-                }
-                return net.DialTCP("tcp", nil, addr)
+
+        err = fwd.To(func(req *http.Request) (*proxy.Proxy, error) {
+                return proxy.SelectRandom()
         })
 
         if err != nil {
@@ -49,6 +47,9 @@ func handleRequest(conn net.Conn) {
 func main() {
         log.Verbose = true
         log.Color = true
+
+        proxy.AddProxy("A PROXY IP:PORT HERE")
+        proxy.AddProxy("A PROXY IP:PORT HERE")
 
         addr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
         if err != nil {
