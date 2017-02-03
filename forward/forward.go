@@ -13,7 +13,7 @@ import (
 
 type Forward struct {
 	conn      net.Conn
-	remote    net.Conn
+	remote	  Remote
 
 	log       logger.Logger
 
@@ -24,8 +24,13 @@ type Forward struct {
 	data     interface{}
 }
 
+type Remote interface {
+	Close()
+	GetConn() (*net.TCPConn, error)
+}
+
 type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (bool, error)
-type OnToHandlerFunc func(req *http.Request) (*net.TCPConn, error)
+type OnToHandlerFunc func(req *http.Request) (Remote, error)
 type OnHandlerFunc func(resp *http.Response, req *http.Request) (error)
 
 func New(conn net.Conn, log logger.Logger) (*Forward, error) {
@@ -97,9 +102,15 @@ func (fwd *Forward)forward() error {
 		return errors.New("Max retry reached.")
 	}
 	fwd.MaxRetry--
+
+
+	remote_conn, err := fwd.remote.GetConn()
+	if err != nil {
+		return err
+	}
 	
 	// Forward request to remote proxy host.
-	err := fwd.request.WriteProxy(fwd.remote)
+	err = fwd.request.WriteProxy(remote_conn)
 	if err != nil {
 		return err
 	}
@@ -172,7 +183,12 @@ func (fwd *Forward)filterRequest() error {
 }
 
 func (fwd *Forward)readResponse() error {
-	resp, err := http.ReadResponse(bufio.NewReader(fwd.remote), fwd.request);
+	remote_conn, err := fwd.remote.GetConn()
+	if err != nil {
+		return err
+	}
+	
+	resp, err := http.ReadResponse(bufio.NewReader(remote_conn), fwd.request);
 	if err != nil {
 		return err
 	}
