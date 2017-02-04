@@ -32,7 +32,7 @@ type Forward struct {
 	response *http.Response
 
 	MaxRetry  int
-	data     interface{}
+	data      interface{}
 }
 
 type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (*User, error)
