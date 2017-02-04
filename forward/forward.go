@@ -11,12 +11,23 @@ import (
 	"github.com/rookmoot/proxifier/logger"
 )
 
+type Remote interface {
+	Close()
+	GetConn() (*net.TCPConn, error)
+}
+
+type User interface {
+	IsConnected() (bool, error)
+}
+
 type Forward struct {
+	log       logger.Logger
+
 	conn      net.Conn
 	remote	  Remote
 
-	log       logger.Logger
-
+	user	 *User
+	
 	request  *http.Request
 	response *http.Response
 
@@ -24,12 +35,7 @@ type Forward struct {
 	data     interface{}
 }
 
-type Remote interface {
-	Close()
-	GetConn() (*net.TCPConn, error)
-}
-
-type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (bool, error)
+type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (*User, error)
 type OnToHandlerFunc func(req *http.Request) (Remote, error)
 type OnHandlerFunc func(resp *http.Response, req *http.Request) (error)
 
@@ -51,6 +57,14 @@ func (fwd *Forward)GetData() interface{} {
 	return fwd.data
 }
 
+func (fwd *Forward)SetUser(user *User) {
+	fwd.user = user
+}
+
+func (fwd *Forward)GetUser() *User {
+	return fwd.user
+}
+
 func (fwd *Forward)Close() {
 	fwd.conn.Close()
 	if fwd.remote != nil {
@@ -62,8 +76,13 @@ func (fwd *Forward)On(cb OnHandlerFunc) error {
 	return cb(fwd.response, fwd.request)
 }
 
-func (fwd *Forward)OnAuthentication(cb OnAuthenticationHandlerFunc) (bool, error) {
-	return cb(fwd.request, "test", "test")
+func (fwd *Forward)OnAuthentication(cb OnAuthenticationHandlerFunc) {
+	_user, err := cb(fwd.request, "test", "test")
+	if err != nil {
+		fwd.log.Warn("Auth : %v", err)
+		return
+	}
+	fwd.user = _user
 }
 
 func (fwd *Forward)To(cb OnToHandlerFunc) error {
