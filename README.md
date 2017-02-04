@@ -35,10 +35,11 @@ func handleRequest(conn net.Conn) {
         }
         defer fwd.Close()
 
-        err = fwd.To(func(req *http.Request) (forward.Remote, error) {
+        fwd.OnSelectRemote(func(req *http.Request) (forward.Remote, error) {
                 return proxy.SelectRandom()
         })
 
+        err = fwd.Forward()
         if err != nil {
                 log.Warn("%v", err)
         }
