@@ -14,8 +14,7 @@ import (
 )
 
 type Remote interface {
-	Close()
-	GetConn() (*net.TCPConn, error)
+	GetRemoteAddr() (*net.TCPAddr, error)
 }
 
 type User interface {
@@ -26,7 +25,7 @@ type Forward struct {
 	log          logger.Logger
 
 	conn         net.Conn
-	remote	     Remote
+	remote	     *net.TCPConn
 
 	user	     User
 	
@@ -95,13 +94,10 @@ func (fwd *Forward)To(cb OnToHandlerFunc) error {
 		return err
 	}
 
-	// use the callback func to get the remote
-	// net tcp connection to forward requests to
-	remote, err := cb(fwd.request)
+	err = fwd.getRemoteConn(cb)
 	if err != nil {
 		return err
-	}	
-	fwd.remote = remote
+	}
 
 	// Forward the request to select proxy remote
 	// and get the according response
@@ -115,20 +111,33 @@ func (fwd *Forward)To(cb OnToHandlerFunc) error {
 	return fwd.response.Write(fwd.conn)
 }
 
+func (fwd *Forward)getRemoteConn(cb OnToHandlerFunc) error {
+	remote, err := cb(fwd.request)
+	if err != nil {
+		return err
+	}
+
+	remote_addr, err := remote.GetRemoteAddr()
+	if err != nil {
+		return err
+	}
+
+	fwd.remote, err = net.DialTCP("tcp", nil, remote_addr)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (fwd *Forward)forward() error {
 	if (fwd.MaxRetry) < 0 {
 		return errors.New("Max retry reached.")
 	}
 	fwd.MaxRetry--
 
-
-	remote_conn, err := fwd.remote.GetConn()
-	if err != nil {
-		return err
-	}
-	
 	// Forward request to remote proxy host.
-	err = fwd.request.WriteProxy(remote_conn)
+	err := fwd.request.WriteProxy(fwd.remote)
 	if err != nil {
 		return err
 	}
@@ -239,12 +248,7 @@ func (fwd *Forward)filterRequest() error {
 }
 
 func (fwd *Forward)readResponse() error {
-	remote_conn, err := fwd.remote.GetConn()
-	if err != nil {
-		return err
-	}
-	
-	resp, err := http.ReadResponse(bufio.NewReader(remote_conn), fwd.request);
+	resp, err := http.ReadResponse(bufio.NewReader(fwd.remote), fwd.request);
 	if err != nil {
 		return err
 	}

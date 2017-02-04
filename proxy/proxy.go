@@ -7,7 +7,6 @@ import (
 
 type Proxy struct {
 	addr *net.TCPAddr
-	conn *net.TCPConn
 }
 
 var proxies []*Proxy
@@ -30,25 +29,10 @@ func New(addr string) (*Proxy, error) {
 	
 	p := Proxy {
 		addr: _addr,
-		conn: nil,
 	}
 	return &p, nil
 }
 
-func (p *Proxy)Close() {
-	if p.conn != nil {
-		p.conn.Close()
-	}
-	p.conn = nil
-}
-
-func (p *Proxy)GetConn() (*net.TCPConn, error) {
-	if p.conn == nil {
-		_conn, err := net.DialTCP("tcp", nil, p.addr)
-		if err != nil {
-			return nil, err
-		}
-		p.conn = _conn
-	}
-	return p.conn, nil
+func (p *Proxy)GetRemoteAddr() (*net.TCPAddr, error) {
+	return p.addr, nil
 }
