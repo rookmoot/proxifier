@@ -22,21 +22,22 @@ type User interface {
 }
 
 type Forward struct {
-	log          logger.Logger
+	log           logger.Logger
 
-	conn         net.Conn
+	conn          net.Conn
 	remote	     *net.TCPConn
 
-	user	     User
+	user	      User
 	
-	request     *http.Request
-	response    *http.Response
+	request      *http.Request
+	response     *http.Response
 
-	authHandler OnAuthenticationHandlerFunc
-	httpHandler []OnHandlerFunc
+	authHandler   OnAuthenticationHandlerFunc
+	remoteHandler OnToHandlerFunc
+	httpHandler   []OnHandlerFunc
 	
-	MaxRetry    int
-	data        interface{}
+	MaxRetry      int
+	data          interface{}
 }
 
 var unauthorizedMsg = []byte("Proxy Authentication Required")
@@ -83,7 +84,11 @@ func (fwd *Forward)OnAuthentication(cb OnAuthenticationHandlerFunc) {
 	fwd.authHandler = cb
 }
 
-func (fwd *Forward)To(cb OnToHandlerFunc) error {
+func (fwd *Forward)OnSelectRemote(cb OnToHandlerFunc) {
+	fwd.remoteHandler = cb
+}
+
+func (fwd *Forward)Forward() error {
 	// read client request from socket
 	// Here we can check for proxy authentication
 	// and others headers sent like X-PROXIFIER-
@@ -94,7 +99,7 @@ func (fwd *Forward)To(cb OnToHandlerFunc) error {
 		return err
 	}
 
-	err = fwd.getRemoteConn(cb)
+	err = fwd.getRemoteConn()
 	if err != nil {
 		return err
 	}
@@ -111,8 +116,12 @@ func (fwd *Forward)To(cb OnToHandlerFunc) error {
 	return fwd.response.Write(fwd.conn)
 }
 
-func (fwd *Forward)getRemoteConn(cb OnToHandlerFunc) error {
-	remote, err := cb(fwd.request)
+func (fwd *Forward)getRemoteConn() error {
+	if fwd.remoteHandler == nil {
+		return errors.New("No callback for fwd.OnSelectRemote() found. Can't perform request.")
+	}
+	
+	remote, err := fwd.remoteHandler(fwd.request)
 	if err != nil {
 		return err
 	}
@@ -292,12 +301,13 @@ func (fwd *Forward)createErrorResponse(code int, reason []byte) {
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Request:       fwd.request,
-//		Header:        http.Header{"Proxy-Authenticate": []string{"Basic realm=" + realm}},
 		Body:          ioutil.NopCloser(bytes.NewBuffer(reason)),
 		ContentLength: int64(len(reason)),
 	}
 
 	if code == 407 {
+		// Automaticaly add a Proxy-Authenticate Header when the client need to
+		// be logged.
 		fwd.response.Header = http.Header{"Proxy-Authenticate": []string{"Basic realm="}};
 	}
 
