@@ -1,11 +1,7 @@
 package proxy
 
 import (
-	"time"
-	"errors"
-	"math/rand"
 	"net"
-	"net/http"
 )
 
 
@@ -26,18 +22,6 @@ func AddProxy(addr string) error {
 	return nil
 }
 
-func SelectRandom() (*Proxy, error) {
-	rand.Seed(time.Now().Unix())
-
-	r := rand.Intn(len(proxies))
-	
-	return proxies[r], nil
-}
-
-func SelectFromRequest(request *http.Request) (*Proxy, error) {
-	return nil, errors.New("SelectFromRequest not implemented")
-}
-
 func New(addr string) (*Proxy, error) {
 	_addr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -52,7 +36,9 @@ func New(addr string) (*Proxy, error) {
 }
 
 func (p *Proxy)Close() {
-	p.conn.Close()
+	if p.conn != nil {
+		p.conn.Close()
+	}
 	p.conn = nil
 }
 
