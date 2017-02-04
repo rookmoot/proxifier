@@ -1,7 +1,9 @@
 package forward
 
 import (
+	"bytes"
 	"bufio"
+	"io/ioutil"
 	"net"
 	"errors"
 	"strings"
@@ -17,25 +19,31 @@ type Remote interface {
 }
 
 type User interface {
-	IsConnected() (bool, error)
+	IsConnected() bool
 }
 
 type Forward struct {
-	log       logger.Logger
+	log          logger.Logger
 
-	conn      net.Conn
-	remote	  Remote
+	conn         net.Conn
+	remote	     Remote
 
-	user	 *User
+	user	     User
 	
-	request  *http.Request
-	response *http.Response
+	request     *http.Request
+	response    *http.Response
 
-	MaxRetry  int
-	data      interface{}
+	authHandler OnAuthenticationHandlerFunc
+	httpHandler []OnHandlerFunc
+	
+	MaxRetry    int
+	data        interface{}
 }
 
-type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (*User, error)
+var unauthorizedMsg = []byte("Proxy Authentication Required")
+var errorMsg        = []byte("Proxy internal error")
+
+type OnAuthenticationHandlerFunc func(req *http.Request, username string, password string) (User, error)
 type OnToHandlerFunc func(req *http.Request) (Remote, error)
 type OnHandlerFunc func(resp *http.Response, req *http.Request) (error)
 
@@ -57,11 +65,7 @@ func (fwd *Forward)GetData() interface{} {
 	return fwd.data
 }
 
-func (fwd *Forward)SetUser(user *User) {
-	fwd.user = user
-}
-
-func (fwd *Forward)GetUser() *User {
+func (fwd *Forward)GetUser() User {
 	return fwd.user
 }
 
@@ -72,17 +76,12 @@ func (fwd *Forward)Close() {
 	}
 }
 
-func (fwd *Forward)On(cb OnHandlerFunc) error {
-	return cb(fwd.response, fwd.request)
+func (fwd *Forward)On(cb OnHandlerFunc) {
+	fwd.httpHandler = append(fwd.httpHandler, cb)
 }
 
 func (fwd *Forward)OnAuthentication(cb OnAuthenticationHandlerFunc) {
-	_user, err := cb(fwd.request, "test", "test")
-	if err != nil {
-		fwd.log.Warn("Auth : %v", err)
-		return
-	}
-	fwd.user = _user
+	fwd.authHandler = cb
 }
 
 func (fwd *Forward)To(cb OnToHandlerFunc) error {
@@ -149,6 +148,33 @@ func (fwd *Forward)forward() error {
 	return nil
 }
 
+func (fwd *Forward)authenticate() error {
+	if fwd.authHandler == nil {		
+		return nil
+	}
+
+	username, password, ok := fwd.ProxyBasicAuth()
+	if ok == false {
+		return errors.New("No authentication header found.")
+	}
+	
+	_user, err := fwd.authHandler(fwd.request, username, password)
+	if _user == nil {
+		return errors.New("Returned nil user during authentication")
+	}
+	
+	if err != nil {
+		return err
+	}
+
+	if _user.IsConnected() == false {
+		return errors.New("Failed to log user in. No user found.")
+	}
+	
+	fwd.user = _user
+	return nil
+}
+
 func (fwd *Forward)readRequest() error {
 	req, err := http.ReadRequest(bufio.NewReader(fwd.conn))
 	if err != nil {
@@ -160,7 +186,7 @@ func (fwd *Forward)readRequest() error {
 	if err == nil {
 		fwd.log.Trace("Request :\n%v", string(dump))
 	}
-
+	
 	err = fwd.filterRequest()
 	if err != nil {
 		return err
@@ -178,6 +204,17 @@ func (fwd *Forward)filterRequest() error {
 			// Handles the following headers and remove them
 			// Proxy-Authorization: Basic dGVzdDp0ZXN0
 			// Proxy-Connection: Keep-Alive
+
+			switch k {
+  			   case "Proxy-Authorization":
+				err := fwd.authenticate()
+				if err != nil {
+					fwd.createErrorResponse(407, unauthorizedMsg)
+					return err
+				}
+				
+			   default:
+			}
 			
 			fwd.request.Header.Del(k)			
 		}
@@ -242,4 +279,23 @@ func (fwd *Forward)filterResponse() error {
 	}
 
 	return nil
+}
+
+
+func (fwd *Forward)createErrorResponse(code int, reason []byte) {
+	fwd.response = &http.Response{
+		StatusCode:    code,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Request:       fwd.request,
+//		Header:        http.Header{"Proxy-Authenticate": []string{"Basic realm=" + realm}},
+		Body:          ioutil.NopCloser(bytes.NewBuffer(reason)),
+		ContentLength: int64(len(reason)),
+	}
+
+	if code == 407 {
+		fwd.response.Header = http.Header{"Proxy-Authenticate": []string{"Basic realm="}};
+	}
+
+	fwd.response.Write(fwd.conn)
 }
