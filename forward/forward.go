@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"time"
 	"bytes"
 	"bufio"
 	"io/ioutil"
@@ -25,7 +26,7 @@ type Forward struct {
 	log           logger.Logger
 
 	conn          net.Conn
-	remote	     *net.TCPConn
+	remote	      net.Conn
 
 	user	      User
 	
@@ -96,11 +97,7 @@ func (fwd *Forward)Forward() error {
 	// send only clean headers
 	err := fwd.readRequest()
 	if err != nil {
-		return err
-	}
-
-	err = fwd.getRemoteConn()
-	if err != nil {
+		fwd.createErrorResponse(500, []byte("Failed to read sent request."))
 		return err
 	}
 
@@ -108,7 +105,18 @@ func (fwd *Forward)Forward() error {
 	// and get the according response
 	err = fwd.forward()
 	if err != nil {
+		fwd.createErrorResponse(500, []byte(err.Error()))
 		return err
+	}
+
+	// Send request and response to callbacks
+	// The user can manage request and response
+	// before they are sent back.
+	for _, cb := range fwd.httpHandler {
+		err = cb(fwd.response, fwd.request)
+		if err != nil {
+			return err
+		}
 	}
 	
 	// Send back remote proxy host response to initial
@@ -116,7 +124,7 @@ func (fwd *Forward)Forward() error {
 	return fwd.response.Write(fwd.conn)
 }
 
-func (fwd *Forward)getRemoteConn() error {
+func (fwd *Forward)getRemoteConn(timeout time.Duration) error {
 	if fwd.remoteHandler == nil {
 		return errors.New("No callback for fwd.OnSelectRemote() found. Can't perform request.")
 	}
@@ -131,10 +139,11 @@ func (fwd *Forward)getRemoteConn() error {
 		return err
 	}
 
-	fwd.remote, err = net.DialTCP("tcp", nil, remote_addr)
+	fwd.remote, err = net.DialTimeout("tcp", remote_addr.String(), timeout)
 	if err != nil {
 		return err
 	}
+	fwd.remote.SetDeadline(time.Now().Add(timeout))
 
 	return nil
 }
@@ -145,8 +154,14 @@ func (fwd *Forward)forward() error {
 	}
 	fwd.MaxRetry--
 
+	timeout_delta := 900 * time.Millisecond;
+	err := fwd.getRemoteConn(timeout_delta)
+	if err != nil {
+		return err
+	}
+	
 	// Forward request to remote proxy host.
-	err := fwd.request.WriteProxy(fwd.remote)
+	err = fwd.request.WriteProxy(fwd.remote)
 	if err != nil {
 		return err
 	}
@@ -216,8 +231,13 @@ func (fwd *Forward)filterRequest() error {
 	if fwd.request == nil {
 		return errors.New("Can't filter forward request. Request is nil.")
 	}
+
+	// clean up necessary stuff
+	fwd.request.Header.Del("Connection")
+	fwd.request.Header.Del("Accept-Encoding")
 	
-	for k, v := range fwd.request.Header {
+	// check for headers specifics operations
+	for k, _ := range fwd.request.Header {
 		if (strings.HasPrefix(k, "Proxy-")) {
 			// Handles the following headers and remove them
 			// Proxy-Authorization: Basic dGVzdDp0ZXN0
@@ -251,7 +271,6 @@ func (fwd *Forward)filterRequest() error {
 		
 			fwd.request.Header.Del(k)
 		}
-		v = v
 	}
 	return nil
 }
@@ -296,6 +315,7 @@ func (fwd *Forward)filterResponse() error {
 
 
 func (fwd *Forward)createErrorResponse(code int, reason []byte) {
+	reason = append(reason, byte('\n'))
 	fwd.response = &http.Response{
 		StatusCode:    code,
 		ProtoMajor:    1,
