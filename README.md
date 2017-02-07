@@ -1,5 +1,5 @@
 # Proxifier
-An intelligent proxy dispatcher perfect for crawling and scraping public data. Proxifier act as a proxy and remotely send and receive requests and responses from other proxies.
+A fast, modern and intelligent proxy rotator perfect for crawling and scraping public data. Proxifier act as a proxy and remotely send and receive requests and responses from other proxies.
 
 # Getting Started
 Firstly, just download and install proxifier.
