@@ -8,6 +8,7 @@ import (
 	"net"
 	"errors"
 	"strings"
+	"strconv"
 	"net/http"
 	"net/http/httputil"
 	
@@ -19,6 +20,7 @@ type Remote interface {
 }
 
 type User interface {
+	Limit() (count, reset int64, allow bool)
 	IsConnected() bool
 }
 
@@ -39,6 +41,10 @@ type Forward struct {
 	
 	MaxRetry      int
 	data          interface{}
+
+	rate int64
+	reset int64
+	allowed bool
 }
 
 var unauthorizedMsg = []byte("Proxy Authentication Required")
@@ -101,6 +107,15 @@ func (fwd *Forward)Forward() error {
 		return err
 	}
 
+
+	// check for Ratelimited user acccess
+	if fwd.user != nil && fwd.user.IsConnected() {
+		fwd.rate, fwd.reset, fwd.allowed = fwd.user.Limit()
+		if fwd.allowed == false {
+			fwd.createErrorResponse(400, []byte("User rate limits exceeded."))
+		}
+	}
+	
 	// Forward the request to select proxy remote
 	// and get the according response
 	err = fwd.forward()
@@ -154,7 +169,7 @@ func (fwd *Forward)forward() error {
 	}
 	fwd.MaxRetry--
 
-	timeout_delta := 900 * time.Millisecond;
+	timeout_delta := 5 * time.Second;
 	err := fwd.getRemoteConn(timeout_delta)
 	if err != nil {
 		return err
@@ -309,6 +324,12 @@ func (fwd *Forward)filterResponse() error {
 		fwd.request.RequestURI = url.String()
 		fwd.forward()
 	}
+
+//	if fwd.response.StatusCode != 200 {
+	fwd.response.Header.Set("X-RateLimit-Limit", strconv.FormatInt(60, 10))
+	fwd.response.Header.Set("X-RateLimit-Remaining", strconv.FormatInt((60 - fwd.rate), 10))
+	fwd.response.Header.Set("X-RateLimit-Reset", strconv.FormatInt(fwd.reset, 10))
+//	}
 
 	return nil
 }
