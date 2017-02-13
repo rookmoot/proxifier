@@ -28,8 +28,6 @@ type Forward struct {
 	log           logger.Logger
 
 	conn          net.Conn
-	remote	      net.Conn
-
 	user	      User
 	
 	request      *http.Request
@@ -39,7 +37,7 @@ type Forward struct {
 	remoteHandler OnToHandlerFunc
 	httpHandler   []OnHandlerFunc
 	
-	MaxRetry      int
+	maxRetry      int
 	data          interface{}
 
 	rate int64
@@ -57,9 +55,8 @@ type OnHandlerFunc func(resp *http.Response, req *http.Request) (error)
 func New(conn net.Conn, log logger.Logger) (*Forward, error) {
 	fwd := Forward{
 		conn: conn,
-		remote: nil,
 		log: log,
-		MaxRetry: 1,
+		maxRetry: 20,
 	}
 	return &fwd, nil
 }
@@ -78,9 +75,6 @@ func (fwd *Forward)GetUser() User {
 
 func (fwd *Forward)Close() {
 	fwd.conn.Close()
-	if fwd.remote != nil {
-		fwd.remote.Close()
-	}
 }
 
 func (fwd *Forward)On(cb OnHandlerFunc) {
@@ -113,12 +107,20 @@ func (fwd *Forward)Forward() error {
 		fwd.rate, fwd.reset, fwd.allowed = fwd.user.Limit()
 		if fwd.allowed == false {
 			fwd.createErrorResponse(400, []byte("User rate limits exceeded."))
+			return errors.New("User rate limits exceeded.")
 		}
 	}
-	
+
+	err = nil
 	// Forward the request to select proxy remote
 	// and get the according response
-	err = fwd.forward()
+	for fwd.maxRetry > 0 {
+		err = fwd.forward()
+		if err == nil {
+			break
+		}
+		fwd.maxRetry--
+	}
 	if err != nil {
 		fwd.createErrorResponse(500, []byte(err.Error()))
 		return err
@@ -139,44 +141,40 @@ func (fwd *Forward)Forward() error {
 	return fwd.response.Write(fwd.conn)
 }
 
-func (fwd *Forward)getRemoteConn(timeout time.Duration) error {
+func (fwd *Forward)getRemoteConn(timeout time.Duration) (net.Conn, error) {
 	if fwd.remoteHandler == nil {
-		return errors.New("No callback for fwd.OnSelectRemote() found. Can't perform request.")
+		return nil, errors.New("No callback for fwd.OnSelectRemote() found. Can't perform request.")
 	}
 	
 	remote, err := fwd.remoteHandler(fwd.request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	remote_addr, err := remote.GetRemoteAddr()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	fwd.remote, err = net.DialTimeout("tcp", remote_addr.String(), timeout)
+	fwd.log.Info("Trying with remote %v", remote_addr.String())
+	conn, err := net.DialTimeout("tcp", remote_addr.String(), timeout)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	fwd.remote.SetDeadline(time.Now().Add(timeout))
+	conn.SetDeadline(time.Now().Add(timeout))
 
-	return nil
+	return conn, nil
 }
 
 func (fwd *Forward)forward() error {
-	if (fwd.MaxRetry) < 0 {
-		return errors.New("Max retry reached.")
-	}
-	fwd.MaxRetry--
-
 	timeout_delta := 5 * time.Second;
-	err := fwd.getRemoteConn(timeout_delta)
+	remote, err := fwd.getRemoteConn(timeout_delta)
 	if err != nil {
 		return err
 	}
 	
 	// Forward request to remote proxy host.
-	err = fwd.request.WriteProxy(fwd.remote)
+	err = fwd.request.WriteProxy(remote)
 	if err != nil {
 		return err
 	}
@@ -188,12 +186,11 @@ func (fwd *Forward)forward() error {
 	// Status code to check :
 	//   301 -> redirection
 	//   4/5xx -> Check for error and retry
-	err = fwd.readResponse()
+	err = fwd.readResponse(remote)
 	if err != nil {
 		return err
 	}
-
-	return nil
+	return remote.Close()
 }
 
 func (fwd *Forward)authenticate() error {
@@ -290,8 +287,8 @@ func (fwd *Forward)filterRequest() error {
 	return nil
 }
 
-func (fwd *Forward)readResponse() error {
-	resp, err := http.ReadResponse(bufio.NewReader(fwd.remote), fwd.request);
+func (fwd *Forward)readResponse(remote net.Conn) error {
+	resp, err := http.ReadResponse(bufio.NewReader(remote), fwd.request);
 	if err != nil {
 		return err
 	}
@@ -325,12 +322,13 @@ func (fwd *Forward)filterResponse() error {
 		fwd.forward()
 	}
 
-//	if fwd.response.StatusCode != 200 {
 	fwd.response.Header.Set("X-RateLimit-Limit", strconv.FormatInt(60, 10))
 	fwd.response.Header.Set("X-RateLimit-Remaining", strconv.FormatInt((60 - fwd.rate), 10))
 	fwd.response.Header.Set("X-RateLimit-Reset", strconv.FormatInt(fwd.reset, 10))
-//	}
 
+	if fwd.response.StatusCode != 200 {
+		return errors.New("No 200 status code response")
+	}
 	return nil
 }
 
