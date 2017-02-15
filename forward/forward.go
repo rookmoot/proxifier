@@ -284,6 +284,14 @@ func (fwd *Forward)filterRequest() error {
 			fwd.request.Header.Del(k)
 		}
 	}
+
+	// Check if we have a callback for authentication. if true, then we need to have
+	// a valid user set.
+	if fwd.authHandler != nil && fwd.user == nil {
+		fwd.createErrorResponse(407, unauthorizedMsg)
+		return errors.New("You need to send your authentication credentials")
+	}
+	
 	return nil
 }
 
