@@ -10,6 +10,34 @@ go get github.com/rookmoot/proxifier
 
 # Example
 
+First create a file that will contain the list of proxies. You NEED to change the `ipAddress` to a real proxy IP address. Likewise update `port` to the actual PORT. Otherwise your application will fail while trying to contact the proxy.
+```json
+[
+    {
+       "ipAddress":"1.1.1.1",
+       "port":9000,
+       "protocols":[
+          "https"
+       ],
+       "anonymityLevel":"elite",
+       "source":"optional",
+       "country":"us"
+    },
+    {
+       "ipAddress":"2.2.2.2",
+       "port":9000,
+       "protocols":[
+          "http"
+       ],
+       "anonymityLevel":"elite",
+       "source":"-",
+       "country":"us"
+    }
+]
+```
+
+Update the following example to change `PROXY_PATH` to the path of the list of proxies.
+
 ```go
 package main
 
@@ -17,15 +45,26 @@ import (
         "net"
         "net/http"
 
+        redis "gopkg.in/redis.v5"
+
+        "github.com/rookmoot/proxifier/forward"
         "github.com/rookmoot/proxifier/logger"
         "github.com/rookmoot/proxifier/proxy"
-        "github.com/rookmoot/proxifier/forward"
 )
+
+const (
+        PROXY_PATH = "/home/joseph/work/src/github.com/rookmoot/proxifier/proxy_data.json"
+)
+
 var (
         log = logger.ColorLogger{}
 )
 
-func handleRequest(conn net.Conn) {
+type SimpleHandler struct {
+        M *proxy.Manager
+}
+
+func (t *SimpleHandler) handleRequest(conn net.Conn) {
         log.Info("New client connected")
 
         fwd, err := forward.New(conn, log)
@@ -36,7 +75,7 @@ func handleRequest(conn net.Conn) {
         defer fwd.Close()
 
         fwd.OnSelectRemote(func(req *http.Request) (forward.Remote, error) {
-                return proxy.SelectRandom()
+                return t.M.GetProxy()
         })
 
         err = fwd.Forward()
@@ -49,8 +88,26 @@ func main() {
         log.Verbose = true
         log.Color = true
 
-        proxy.AddProxy("A PROXY IP:PORT HERE")
-        proxy.AddProxy("A PROXY IP:PORT HERE")
+        r := redis.NewClient(
+                &redis.Options{
+                        Network:  "unix",
+                        Addr:     "/var/run/redis/redis.sock",
+                        Password: "",
+                        DB:       0,
+                },
+        )
+
+        proxyManager, err := proxy.NewManager(r, log)
+
+        if err != nil {
+                panic(err)
+        }
+
+        proxyManager.UpdateProxies(PROXY_PATH)
+
+        t := SimpleHandler{
+                M: proxyManager,
+        }
 
         addr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
         if err != nil {
@@ -69,12 +126,11 @@ func main() {
                         log.Warn("%v", err)
                 }
 
-                go handleRequest(conn)
+                go t.handleRequest(conn)
         }
 }
-```
 
-You NEED to change `"A PROXY IP:PORT HERE"` to a real proxy `"IP:PORT"` address here, otherwise your application will fail while trying to contact another proxy.
+```
 
 # Try it !
 
@@ -90,4 +146,4 @@ curl -vx http://127.0.0.1:8080 -H "X-Proxifier-Https: On" http://httpbin.org/ip
 ```
 
 # Still in Beta
-This project has just started, fill free to provide any feedback or pull requests.
+This project has just started, feel free to provide any feedback or pull requests.
