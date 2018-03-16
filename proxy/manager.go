@@ -1,27 +1,39 @@
 package proxy
 
 import (
-	"net"
+	"encoding/json"
 	"fmt"
-	"time"
-	"math/rand"
-	"strings"
-	"strconv"
 	"io/ioutil"
-        "encoding/json"
-	"github.com/rookmoot/proxifier/logger"
+	"math/rand"
+	"net"
+	"strconv"
+	"strings"
+	"time"
+
 	redis "gopkg.in/redis.v5"
+
+	"github.com/rookmoot/proxifier/logger"
 )
 
+type RedisInterface interface {
+	SMembers(key string) *redis.StringSliceCmd
+	SAdd(key string, members ...interface{}) *redis.IntCmd
+	HMGet(key string, fields ...string) *redis.SliceCmd
+	HMSet(key string, fields map[string]string) *redis.StatusCmd
+	HSet(key, field string, value interface{}) *redis.BoolCmd
+	HGet(key, field string) *redis.StringCmd
+	Incr(key string) *redis.IntCmd
+}
+
 type Manager struct {
-	db *redis.Ring
-	log logger.Logger
+	db      RedisInterface
+	log     logger.Logger
 	proxies []*Proxy
 }
 
-func NewManager(db *redis.Ring, log logger.Logger) (*Manager, error) {
+func NewManager(db RedisInterface, log logger.Logger) (*Manager, error) {
 	m := Manager{
-		db: db,
+		db:  db,
 		log: log,
 	}
 
@@ -29,18 +41,18 @@ func NewManager(db *redis.Ring, log logger.Logger) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &m, nil
 }
 
-func (m *Manager)UpdateProxies(filepath string) error {
+func (m *Manager) UpdateProxies(filepath string) error {
 	proxies, err := m.readProxiesFromFile(filepath)
 	if err != nil {
 		return err
 	}
 
 	m.log.Info("%v", proxies[0])
-	
+
 	for _, proxy := range proxies {
 		if proxy.GetAnonymityLevel() == "elite" && (proxy.GetProtocol() == "http" || proxy.GetProtocol() == "https") {
 			if m.proxyExists(proxy) == false {
@@ -57,17 +69,17 @@ func (m *Manager)UpdateProxies(filepath string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
-func (m *Manager)GetProxy() (*Proxy, error) {
+func (m *Manager) GetProxy() (*Proxy, error) {
 	rand.Seed(time.Now().Unix())
 	r := rand.Intn(len(m.proxies))
 	return m.proxies[r], nil
 }
 
-func (m *Manager)loadProxyList() error {
+func (m *Manager) loadProxyList() error {
 	ret, err := m.db.SMembers("proxies").Result()
 	if err != nil {
 		return err
@@ -82,11 +94,11 @@ func (m *Manager)loadProxyList() error {
 			m.proxies = append(m.proxies, p)
 		}
 	}
-	
+
 	return nil
 }
 
-func (m *Manager)loadProxy(pid int) (*Proxy, error) {
+func (m *Manager) loadProxy(pid int) (*Proxy, error) {
 	data, err := m.db.HMGet(fmt.Sprintf("proxy:%d", pid), "ipaddress", "port", "protocol", "anonymitylevel", "source", "country").Result()
 	if err != nil {
 		return nil, err
@@ -99,25 +111,25 @@ func (m *Manager)loadProxy(pid int) (*Proxy, error) {
 	infos["anonymitylevel"] = data[3].(string)
 	infos["source"] = data[4].(string)
 	infos["country"] = data[5].(string)
-	
+
 	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%s", infos["ipaddress"], infos["port"]))
 	if err != nil {
 		return nil, err
 	}
 
 	p := Proxy{
-		id: pid,
-		addr: addr,
+		id:    pid,
+		addr:  addr,
 		infos: infos,
 	}
 	return &p, nil
 }
 
-func (m *Manager)proxySave(p Proxy) error {
+func (m *Manager) proxySave(p Proxy) error {
 	// INCR proxies_next_id
 	// HMSET proxy:[ID] username [USERNAME] password [MD5HASH]
 	// SADD proxies [ID]
-	
+
 	next_id, err := m.db.Incr("proxies_next_id").Result()
 	if err != nil {
 		return err
@@ -140,7 +152,7 @@ func (m *Manager)proxySave(p Proxy) error {
 	return nil
 }
 
-func (m *Manager)proxyExists(p Proxy) bool {
+func (m *Manager) proxyExists(p Proxy) bool {
 	_, err := m.db.HGet("proxies_ids", p.GetAddress()).Result()
 	if err != nil {
 		return false
@@ -148,15 +160,15 @@ func (m *Manager)proxyExists(p Proxy) bool {
 	return true
 }
 
-func (m *Manager)readProxiesFromFile(filepath string) ([]Proxy, error) {
+func (m *Manager) readProxiesFromFile(filepath string) ([]Proxy, error) {
 	file, err := ioutil.ReadFile(filepath)
 	if err != nil {
 		return nil, err
 	}
 
-	var proxies []Proxy	
+	var proxies []Proxy
 	var values []map[string]interface{}
-	
+
 	err = json.Unmarshal([]byte(file), &values)
 	if err != nil {
 		return nil, err
@@ -171,19 +183,19 @@ func (m *Manager)readProxiesFromFile(filepath string) ([]Proxy, error) {
 					infos["protocol"] = tmp.(string)
 				}
 			} else if k == "port" {
-				infos["port"] = fmt.Sprintf("%v",  v)
+				infos["port"] = fmt.Sprintf("%v", v)
 			} else {
 				infos[strings.ToLower(k)] = strings.ToLower(v.(string))
 			}
 		}
-		
+
 		p := Proxy{
-			id: 0,
-			addr: nil,
+			id:    0,
+			addr:  nil,
 			infos: infos,
 		}
 		proxies = append(proxies, p)
 	}
-		
+
 	return proxies, nil
 }
